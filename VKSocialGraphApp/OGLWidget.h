@@ -45,6 +45,7 @@ public:
 			my = ( y - float( lastmy - h / 2 ) / float( h ) * z * 2 ) * h / float( w );
 			//spatial_states[ 0 ].x = mx;
 			//spatial_states[ 0 ].y = my;
+			mutex.lock();
 			for( uint32_t i = 0; i < model.getPersons().size(); i++ )
 			{
 				auto person = model.getPersons()[ i ];
@@ -55,6 +56,7 @@ public:
 					qDebug() << person.first_name << " " << person.last_name << " " << person.vk_id << " " << person.photos_url[ 0 ] << "\n";
 				}
 			}
+			mutex.unlock();
 		} else if( event->type() == QEvent::MouseMove )
 		{
 			QMouseEvent *mouseEvent = static_cast<QMouseEvent*>( event );
@@ -91,10 +93,13 @@ protected:
 	std::thread texture_thread , packer_thread;
 	void initializeGL()
 	{
-		packer_thread = std::thread( [ this ]()
+		/*packer_thread = std::thread( [ this ]()
 		{
-			
-		} );
+			while( working )
+			{
+				pack();
+			}
+		} );*/
 		texture_thread = std::thread( [ this ]()
 		{
 			QEventLoop loop;
@@ -110,23 +115,31 @@ protected:
 			vkmapper.getUser( [ this , &vkmapper ]( QVector< Person > const &p )
 			{
 				auto main_user = p[ 0 ];
+				mutex.lock();
 				addPerson( main_user );
+				mutex.unlock();
 
 				vkmapper.getFriends( main_user.vk_id , [ main_user , this , &vkmapper ]( QVector< Person > const &v )
 				{
 					//ui.widget->findChild< QTreeView* >( QString( "treeView" ) )->setModel( new TreeModel( v ) );
 					for( auto const &person : v )
 					{
+						mutex.lock();
 						addPerson( person );
 						addRelation( main_user.vk_id , person.vk_id );
+						mutex.unlock();
+						
 						auto id = person.vk_id;
 						vkmapper.getFriends( id , [ id , this , &vkmapper ]( QVector< Person > const &v )
 						{
 							for( auto const &person : v )
 							{
-								addPerson( person );
 								auto id2 = person.vk_id;
+								mutex.lock();
+								addPerson( person );
 								addRelation( id , id2 );
+								mutex.unlock();
+								
 								
 								//qDebug() << person.vk_id << " " << fperson.vk_id << "\n";
 								vkmapper.getFriends( id2 , [ id2 , this ]( QVector< Person > const &v )
@@ -134,8 +147,11 @@ protected:
 									for( auto const &person : v )
 									{
 										auto id3 = person.vk_id;
+										mutex.lock();
 										addPerson( person );
 										addRelation( id2 , id3 );
+										mutex.unlock();
+										
 									}
 								} );
 							}
@@ -147,9 +163,10 @@ protected:
 			while( working )
 			{
 				//uint32_t counter = 0;
-				
+				mutex.lock();
 				for( uint32_t i = 0; i < model.getPersons().size(); i++ )
 				{
+					//mutex.lock();
 					auto person = model.getPersons()[ i ];
 					if( person.uv_mapping_id == -1 )
 					{
@@ -172,12 +189,9 @@ protected:
 							requests_counter++;
 						}
 						model.getPersons()[ i ].uv_mapping_id = -2;
-						/*if( counter > 10 )
-						{
-							//break;
-						}*/
 					}
 				};
+				mutex.unlock();
 				//qDebug() << "request made:" << requests_counter << "\n";
 				//vkmapper.quitEvent( loop );
 				timer->setInterval( 10 );
@@ -212,6 +226,7 @@ protected:
 	}
 	QMutex mutex;
 	QVector< QPair< uint32_t , QImage > > photos;
+	QVector< QPair< uint32_t , UVMapping > > uvmaps;
 	void paintGL()
 	{
 		if( fbo < 0 )
@@ -228,11 +243,7 @@ protected:
 				continue;
 			}
 			model.getPersons()[ photo_pair.first ].uv_mapping_id = id;
-			auto mapping = atlas.mappings[ id ];
-			spatial_states[ photo_pair.first ].u = mapping.u;
-			spatial_states[ photo_pair.first ].u_size = mapping.u_size;
-			spatial_states[ photo_pair.first ].v = mapping.v;
-			spatial_states[ photo_pair.first ].v_size = mapping.v_size;
+			uvmaps.append( { photo_pair.first , atlas.mappings[ id ] } );
 		}
 		photos.clear();
 		glBindFramebuffer( GL_FRAMEBUFFER , fbo );
@@ -240,7 +251,13 @@ protected:
 		glClearColor( 1 , 1 , 1 , 1 );
 		glClearDepthf( 1 );
 		glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );
-		
+		for( ; spatial_queue > 0; spatial_queue-- )
+		{
+			float r = sqrtf( unirandf() ) * 100.0f;
+			float phi = unirandf() * M_PI * 2;
+			SpatialState sstate{ cosf( phi ) * r , sinf( phi ) * r };
+			spatial_states.append( sstate );
+		}
 		glDisable( GL_DEPTH_TEST );
 		glDisable( GL_CULL_FACE );
 		glEnable( GL_BLEND );
@@ -249,7 +266,6 @@ protected:
 		glActiveTexture( GL_TEXTURE0 );
 		glBindTexture( GL_TEXTURE_2D , atlas.atlas_texture );
 
-		pack();
 		view.render( spatial_states , model.getRelations() , x , y , z , w , h );
 		atlas.draw();
 		mutex.unlock();
@@ -294,25 +310,15 @@ private:
 	PersonGraph model;
 	Atlas atlas;
 	QVector< SpatialState > spatial_states;
-	void addSpatialState()
-	{
-		float r = sqrtf( unirandf() ) * 100.0f;
-		float phi = unirandf() * M_PI * 2;
-		SpatialState sstate{ cosf( phi ) * r , sinf( phi ) * r };
-		spatial_states.append( sstate );
-	}
+	int32_t spatial_queue = 0;
 	void addPerson( Person const &p )
 	{
-		mutex.lock();
 		if( model.addPerson( p ) )
-			addSpatialState();
-		mutex.unlock();
+			spatial_queue++;
 	}
 	void addRelation( uint64_t o0 , uint64_t o1 )
 	{
-		mutex.lock();
 		model.addRelation( o0 , o1 );
-		mutex.unlock();
 	}
 	void setUVMapping( uint32_t index , uint8_t u , uint8_t v , uint8_t ru , uint8_t tv )
 	{
@@ -330,6 +336,33 @@ private:
 	void pack()
 	{
 		float max_x = 0.0f , min_x = 0.0f , max_y = 0.0f , min_y = 0.0f;
+		mutex.lock();
+		auto spatial_states = this->spatial_states;
+		spatial_states.detach();
+		auto relations = model.getRelations();
+		relations.detach();
+		auto spatial_queue = this->spatial_queue;
+		this->spatial_queue = 0;
+		mutex.unlock();
+
+		for( ; spatial_queue > 0; spatial_queue-- )
+		{
+			float r = sqrtf( unirandf() ) * 100.0f;
+			float phi = unirandf() * M_PI * 2;
+			SpatialState sstate{ cosf( phi ) * r , sinf( phi ) * r };
+			spatial_states.append( sstate );
+		}
+		mutex.lock();
+		for( auto uvmap : uvmaps )
+		{
+			auto mapping = uvmap.second;
+			spatial_states[ uvmap.first ].u = mapping.u;
+			spatial_states[ uvmap.first ].u_size = mapping.u_size;
+			spatial_states[ uvmap.first ].v = mapping.v;
+			spatial_states[ uvmap.first ].v_size = mapping.v_size;
+		}
+		uvmaps.clear();
+		mutex.unlock();
 		for( auto const &sstate : spatial_states )
 		{
 			max_x = fmaxf( max_x , sstate.x );
@@ -337,7 +370,7 @@ private:
 			max_y = fmaxf( max_y , sstate.y );
 			min_y = fminf( min_y , sstate.y );
 		}
-		for( auto const &relation : model.getRelations() )
+		for( auto const &relation : relations )
 		{
 			auto &v0 = spatial_states[ relation.first ];
 			auto &v1 = spatial_states[ relation.second ];
@@ -389,6 +422,9 @@ private:
 				}
 			}
 		}
+		mutex.lock();
+		this->spatial_states = std::move( spatial_states );
+		mutex.unlock();
 		/*float viewproj[] =
 		{
 		-1.0f , 0.0f , 0.0f , 0.0f ,

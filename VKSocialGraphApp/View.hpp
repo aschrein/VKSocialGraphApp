@@ -138,7 +138,6 @@ struct View
 				,
 				"uniform mat4 viewproj;\n\
 				attribute vec2 position;\n\
-				varying vec2 uv;\n\
 				void main()\n\
 				{\n\
 					gl_Position = viewproj * vec4( position , 0.0 , 1.0 );\n\
@@ -151,12 +150,15 @@ struct View
 			QVector< QPair< uint32_t , uint32_t > > const &relations )
 		{
 			dev_buffer.resize( relations.size() * 16 );
-			Buffer::Mapping mapping( dev_buffer , true );
-			float *lines = ( float* )mapping.map;
+			float *lines = ( float* )dev_buffer.map( true );
 			int i = 0;
 			//__android_log_print( ANDROID_LOG_VERBOSE , "NATIVE" , "edges buf pointer %i\n" , out_edges_buf );
 			for( auto const &relation : relations )
 			{
+				if( relation.first >= sstates.size() || relation.second >= sstates.size() )
+				{
+					continue;
+				}
 				auto v0 = sstates[ relation.first ];
 				auto v1 = sstates[ relation.second ];
 				lines[ i++ ] = v0.x;
@@ -164,17 +166,22 @@ struct View
 				lines[ i++ ] = v1.x;
 				lines[ i++ ] = v1.y;
 			}
-
+			dev_buffer.unmap();
 		}
 		void draw( QVector< SpatialState > const &sstates ,
 			QVector< QPair< uint32_t , uint32_t > > const &relations , float *viewproj )
 		{
-			Binding< Buffer > bo( dev_buffer );
+			if( relations.size() == 0 )
+			{
+				return;
+			}
+			dev_buffer.bind();
 			update( sstates , relations );
 			program.bind();
 			glUniform4f( ucolor , 0.0f , 0.0f , 0.0f , 1.0f );
 			glUniformMatrix4fv( uviewproj , 1 , false , viewproj );
-			glDrawArrays( GL_LINES , 0 , relations.size() * 2 );
+			glDrawArrays( GL_LINE_STIPPLE , 0 , relations.size() * 2 );
+			dev_buffer.unbind();
 		}
 	} edges;
 	void init()
@@ -187,7 +194,10 @@ struct View
 		QVector< QPair< uint32_t , uint32_t > > const &relations ,
 		float x , float y , float z , int width , int height )
 	{
-
+		if( sstates.size() == 0 )
+		{
+			return;
+		}
 		float viewproj[] =
 		{
 			-1.0f , 0.0f , 0.0f , 0.0f ,
@@ -195,11 +205,8 @@ struct View
 			0.0f , 0.0f , 1.0f , 0.0f ,
 			x , -y , 0.0f , z
 		};
-
-		edges.draw( sstates , relations , viewproj );
+		//edges.draw( sstates , relations , viewproj );
 		rects.draw( sstates , viewproj );
 
 	}
-
-
 };
