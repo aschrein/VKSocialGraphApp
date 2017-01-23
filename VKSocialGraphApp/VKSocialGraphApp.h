@@ -5,11 +5,11 @@
 
 class VKSocialGraphApp : public QMainWindow
 {
-    Q_OBJECT
-
+	
+	Q_OBJECT
 public:
-    VKSocialGraphApp(QWidget *parent = Q_NULLPTR);
+	VKSocialGraphApp(QWidget *parent = Q_NULLPTR);
 
 private:
-    Ui::VKSocialGraphAppClass ui;
+	Ui::VKSocialGraphAppClass ui;
 };
