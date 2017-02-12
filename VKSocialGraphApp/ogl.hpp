@@ -190,20 +190,27 @@ struct Buffer
 		}
 		size = new_size;
 	}
+	template< typename T >
 	struct Mapping
 	{
 		Buffer &buf;
-		void *map;
-		Mapping( Buffer &b , bool invalidate = false ) : buf( b )
+		T *map;
+		int loc;
+		Mapping( Buffer &b , bool invalidate = false ) : buf( b ) , loc( 0 )
 		{
-			map = b.map( invalidate );
+			map = static_cast< T* >( b.map( invalidate ) );
 		}
 		~Mapping()
 		{
 			buf.unmap();
 		}
+		auto &add( T const &a )
+		{
+			map[ loc++ ] = a;
+			return *this;
+		}
 	};
-	void* map( bool invalidate = false )
+	void *map( bool invalidate = false )
 	{
 		void *ptr;
 		if( invalidate )

@@ -93,17 +93,17 @@ protected:
 	std::thread texture_thread , packer_thread;
 	void initializeGL()
 	{
-		/*packer_thread = std::thread( [ this ]()
+		packer_thread = std::thread( [ this ]()
 		{
 			while( working )
 			{
 				pack();
 			}
-		} );*/
+		} );
 		texture_thread = std::thread( [ this ]()
 		{
 			QEventLoop loop;
-			VKMapper vkmapper( "4f84837935266ac8113f0fd2cf1c01912a9d34ae12ce1078a047b2db58a840c02f4c3cb15969de7ff0a70" );
+			VKMapper vkmapper( "f3fb74134dca54a7f43e99158ff8ad67220f75b05bde8839930606f6c01392017a7101b671aa712a0304c" );
 			int requests_counter = 0;
 			vkmapper.makeThisThread();
 			vkmapper.quitEvent( loop );
@@ -163,11 +163,13 @@ protected:
 			while( working )
 			{
 				//uint32_t counter = 0;
-				mutex.lock();
+				
 				for( uint32_t i = 0; i < model.getPersons().size(); i++ )
 				{
 					//mutex.lock();
+					mutex.lock();
 					auto person = model.getPersons()[ i ];
+					mutex.unlock();
 					if( person.uv_mapping_id == -1 )
 					{
 						if( person.photos_url.size() >= 1 )
@@ -188,13 +190,15 @@ protected:
 							} );
 							requests_counter++;
 						}
+						mutex.lock();
 						model.getPersons()[ i ].uv_mapping_id = -2;
+						mutex.unlock();
 					}
 				};
-				mutex.unlock();
+				
 				//qDebug() << "request made:" << requests_counter << "\n";
 				//vkmapper.quitEvent( loop );
-				timer->setInterval( 10 );
+				timer->setInterval( 100 );
 				connect( timer , &QTimer::timeout , &loop , &QEventLoop::quit );
 				timer->start();
 				loop.exec();
@@ -251,13 +255,6 @@ protected:
 		glClearColor( 1 , 1 , 1 , 1 );
 		glClearDepthf( 1 );
 		glClear( GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT );
-		for( ; spatial_queue > 0; spatial_queue-- )
-		{
-			float r = sqrtf( unirandf() ) * 100.0f;
-			float phi = unirandf() * M_PI * 2;
-			SpatialState sstate{ cosf( phi ) * r , sinf( phi ) * r };
-			spatial_states.append( sstate );
-		}
 		glDisable( GL_DEPTH_TEST );
 		glDisable( GL_CULL_FACE );
 		glEnable( GL_BLEND );
@@ -265,7 +262,7 @@ protected:
 		glBlendEquation( GL_FUNC_ADD );
 		glActiveTexture( GL_TEXTURE0 );
 		glBindTexture( GL_TEXTURE_2D , atlas.atlas_texture );
-
+		//pack();
 		view.render( spatial_states , model.getRelations() , x , y , z , w , h );
 		atlas.draw();
 		mutex.unlock();
@@ -370,10 +367,13 @@ private:
 			max_y = fmaxf( max_y , sstate.y );
 			min_y = fminf( min_y , sstate.y );
 		}
+		
 		for( auto const &relation : relations )
 		{
 			auto &v0 = spatial_states[ relation.first ];
 			auto &v1 = spatial_states[ relation.second ];
+			//auto &nv0 = nspatial_states[ relation.first ];
+			//auto &nv1 = nspatial_states[ relation.second ];
 			float dx = v1.x - v0.x;
 			float dy = v1.y - v0.y;
 			float dist = ( dx * dx + dy * dy );
@@ -389,6 +389,8 @@ private:
 				v1.y -= dy * force;
 			}
 		}
+		auto nspatial_states = spatial_states;
+		nspatial_states.detach();
 		//__android_log_print( ANDROID_LOG_VERBOSE , "NATIVE" , "size(%f,%f,%f)\n" ,
 		//	( max_x + min_x ) * 0.5f , ( max_y + min_y ) * 0.5f , fmaxf( fabsf( max_x - min_x ) , fabsf( max_y - min_y ) ) * 0.5f );
 		QuadTree tree( ( max_x + min_x ) * 0.5f , ( max_y + min_y ) * 0.5f , fmaxf( max_x - min_x , max_y - min_y ) * 0.5f );
@@ -398,14 +400,17 @@ private:
 			tree.addItem( { i++ ,sstate.x,sstate.y,0.1f } );
 		}
 		QVector< int32_t > indices;
-		for( auto &sstate : spatial_states )
+		for( int i = 0; i < spatial_states.size(); i++ )
 		{
+			auto sstate = spatial_states[ i ];
+			auto &nsstate = nspatial_states[ i ];
 			indices.clear();
 			tree.fillColided( sstate.x , sstate.y , 10.0f , indices );
 			//
 			for( int32_t j : indices )
 			{
-				auto &sstate1 = spatial_states[ j ];
+				auto sstate1 = spatial_states[ j ];
+				auto &nsstate1 = nspatial_states[ j ];
 				float dx = sstate1.x - sstate.x;
 				float dy = sstate1.y - sstate.y;
 				float dist = ( dx * dx + dy * dy );
@@ -415,15 +420,15 @@ private:
 					dx /= dist;
 					dy /= dist;
 					float force = pushForce( dist * 2 );
-					sstate.x += dx * force;
-					sstate.y += dy * force;
-					sstate1.x -= dx * force;
-					sstate1.y -= dy * force;
+					nsstate.x += dx * force;
+					nsstate.y += dy * force;
+					nsstate1.x -= dx * force;
+					nsstate1.y -= dy * force;
 				}
 			}
 		}
 		mutex.lock();
-		this->spatial_states = std::move( spatial_states );
+		this->spatial_states = std::move( nspatial_states );
 		mutex.unlock();
 		/*float viewproj[] =
 		{

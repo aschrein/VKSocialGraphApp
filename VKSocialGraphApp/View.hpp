@@ -95,8 +95,7 @@ struct View
 		{
 			float view_size = 1.1f;
 			dev_buffer.resize( sstates.size() * sizeof( RectData ) );
-			Buffer::Mapping mapping( dev_buffer , true );
-			RectData *rects = ( RectData* )mapping.map;
+			Buffer::Mapping< RectData > rects( dev_buffer , true );
 			int i = 0;
 			for( auto const &sstate : sstates )
 			{
@@ -104,7 +103,7 @@ struct View
 				{
 					sstate.x , sstate.y , view_size , sstate.u , sstate.v , sstate.u_size , sstate.v_size
 				};
-				rects[ i++ ] = rect;
+				rects.add( rect );
 			}
 		}
 		void draw( QVector< SpatialState > const &sstates , float *viewproj )
@@ -125,9 +124,14 @@ struct View
 		Program program;
 		Buffer dev_buffer;
 		uint32_t uviewproj , ucolor;
+		uint32_t vao;
 		void init()
 		{
+			glGenVertexArrays( 1 , &vao );
+			glBindVertexArray( vao );
 			dev_buffer = Buffer::createVBO( GL_STREAM_DRAW , { 1 ,{ { 0 , 2 , GL_FLOAT , false , 8,0 } } } );
+			dev_buffer.bind();
+			glBindVertexArray( 0 );
 			program.init(
 				"precision highp float;\n\
 				uniform vec4 color;\n\
@@ -150,7 +154,7 @@ struct View
 			QVector< QPair< uint32_t , uint32_t > > const &relations )
 		{
 			dev_buffer.resize( relations.size() * 16 );
-			float *lines = ( float* )dev_buffer.map( true );
+			Buffer::Mapping< float > lines( dev_buffer , true );
 			int i = 0;
 			//__android_log_print( ANDROID_LOG_VERBOSE , "NATIVE" , "edges buf pointer %i\n" , out_edges_buf );
 			for( auto const &relation : relations )
@@ -161,12 +165,12 @@ struct View
 				}
 				auto v0 = sstates[ relation.first ];
 				auto v1 = sstates[ relation.second ];
-				lines[ i++ ] = v0.x;
-				lines[ i++ ] = v0.y;
-				lines[ i++ ] = v1.x;
-				lines[ i++ ] = v1.y;
+				lines
+					.add( v0.x )
+					.add( v0.y )
+					.add( v1.x )
+					.add( v1.y );
 			}
-			dev_buffer.unmap();
 		}
 		void draw( QVector< SpatialState > const &sstates ,
 			QVector< QPair< uint32_t , uint32_t > > const &relations , float *viewproj )
@@ -177,11 +181,12 @@ struct View
 			}
 			dev_buffer.bind();
 			update( sstates , relations );
+			glBindVertexArray( vao );
 			program.bind();
 			glUniform4f( ucolor , 0.0f , 0.0f , 0.0f , 1.0f );
 			glUniformMatrix4fv( uviewproj , 1 , false , viewproj );
-			glDrawArrays( GL_LINE_STIPPLE , 0 , relations.size() * 2 );
-			dev_buffer.unbind();
+			glDrawArrays( GL_LINES , 0 , relations.size() * 2 );
+			glBindVertexArray( 0 );
 		}
 	} edges;
 	void init()
@@ -205,7 +210,7 @@ struct View
 			0.0f , 0.0f , 1.0f , 0.0f ,
 			x , -y , 0.0f , z
 		};
-		//edges.draw( sstates , relations , viewproj );
+		edges.draw( sstates , relations , viewproj );
 		rects.draw( sstates , viewproj );
 
 	}
