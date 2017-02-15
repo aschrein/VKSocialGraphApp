@@ -36,7 +36,7 @@ struct Array
 		}
 	}
 };
-struct QuadNode
+/*struct QuadNode
 {
 	int32_t index;
 	float x , y , size;
@@ -144,4 +144,4 @@ struct QuadTree
 			coords.add( x - size ); coords.add( y - size );
 		}
 	}
-};
+};*/

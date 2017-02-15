@@ -8,6 +8,7 @@
 #include <math.h>
 #include "Atlas.hpp"
 #include <qvector.h>
+#include <CudaModule/CudaModule.h>
 struct SpatialState
 {
 	float x , y;
@@ -156,7 +157,6 @@ struct View
 			dev_buffer.resize( relations.size() * 16 );
 			Buffer::Mapping< float > lines( dev_buffer , true );
 			int i = 0;
-			//__android_log_print( ANDROID_LOG_VERBOSE , "NATIVE" , "edges buf pointer %i\n" , out_edges_buf );
 			for( auto const &relation : relations )
 			{
 				if( relation.first >= sstates.size() || relation.second >= sstates.size() )
@@ -188,6 +188,56 @@ struct View
 			glDrawArrays( GL_LINES , 0 , relations.size() * 2 );
 			glBindVertexArray( 0 );
 		}
+		void fillCell( std::vector< QuadNode > const &aQuadNodes ,
+			Buffer::Mapping< float > &lines ,
+			float cellX , float cellY , float cellSize , int i )
+		{
+			auto node = aQuadNodes[ i ];
+			lines.add( cellX - cellSize ).add( cellY - cellSize ).add( cellX - cellSize ).add( cellY + cellSize );
+			lines.add( cellX - cellSize ).add( cellY + cellSize ).add( cellX + cellSize ).add( cellY + cellSize );
+			lines.add( cellX + cellSize ).add( cellY + cellSize ).add( cellX + cellSize ).add( cellY - cellSize );
+			lines.add( cellX + cellSize ).add( cellY - cellSize ).add( cellX - cellSize ).add( cellY - cellSize );
+			if( node.children[ 0 ] > 0 )
+			{
+				for( int j = 0; j < 4; j++ )
+				{
+					auto childPosition = getChildPosition( cellX , cellY , cellSize , j );
+					fillCell( aQuadNodes , lines ,
+						childPosition.x , childPosition.y , cellSize / 2 , node.children[ j ] );
+				}
+			}
+		};
+		void drawQuadNodes( QVector< SpatialState > const &sstates ,
+			std::vector< QuadNode > const &aQuadNodes , float *viewproj )
+		{
+			if( aQuadNodes.size() == 0 )
+			{
+				return;
+			}
+			float max_x = 0.0f , min_x = 0.0f , max_y = 0.0f , min_y = 0.0f;
+			for( auto const &pos : sstates )
+			{
+				max_x = fmaxf( max_x , pos.x );
+				min_x = fminf( min_x , pos.x );
+				max_y = fmaxf( max_y , pos.y );
+				min_y = fminf( min_y , pos.y );
+			}
+			float rootX = ( max_x + min_x ) * 0.5f;
+			float rootY = ( max_y + min_y ) * 0.5f;
+			float rootSize = fmaxf( ( max_x - min_x ) * 0.5f , ( max_y - min_y ) * 0.5f );
+			{
+				dev_buffer.bind();
+				dev_buffer.resize( aQuadNodes.size() * 8 * 2 * 4 );
+				Buffer::Mapping< float > lines( dev_buffer , true );
+				fillCell( aQuadNodes , lines , rootX , rootY , rootSize , 0 );
+			}
+			glBindVertexArray( vao );
+			program.bind();
+			glUniform4f( ucolor , 0.0f , 0.0f , 0.0f , 1.0f );
+			glUniformMatrix4fv( uviewproj , 1 , false , viewproj );
+			glDrawArrays( GL_LINES , 0 , aQuadNodes.size() * 8 );
+			glBindVertexArray( 0 );
+		}
 	} edges;
 	void init()
 	{
@@ -197,6 +247,7 @@ struct View
 	View() = default;
 	void render( QVector< SpatialState > const &sstates ,
 		QVector< QPair< uint32_t , uint32_t > > const &relations ,
+		std::vector< QuadNode > const &aQuadNodes ,
 		float x , float y , float z , int width , int height )
 	{
 		if( sstates.size() == 0 )
@@ -210,6 +261,7 @@ struct View
 			0.0f , 0.0f , 1.0f , 0.0f ,
 			x , -y , 0.0f , z
 		};
+		edges.drawQuadNodes( sstates , aQuadNodes , viewproj );
 		edges.draw( sstates , relations , viewproj );
 		rects.draw( sstates , viewproj );
 

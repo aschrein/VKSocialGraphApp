@@ -14,6 +14,7 @@
 #include <qeventloop.h>
 #include <qtimer.h>
 #include <qevent.h>
+#include <CudaModule/CudaModule.h>
 class OGLWidget : public QOpenGLWidget
 {
 public:
@@ -45,7 +46,7 @@ public:
 			my = ( y - float( lastmy - h / 2 ) / float( h ) * z * 2 ) * h / float( w );
 			//spatial_states[ 0 ].x = mx;
 			//spatial_states[ 0 ].y = my;
-			mutex.lock();
+			/*mutex.lock();
 			for( uint32_t i = 0; i < model.getPersons().size(); i++ )
 			{
 				auto person = model.getPersons()[ i ];
@@ -56,7 +57,7 @@ public:
 					qDebug() << person.first_name << " " << person.last_name << " " << person.vk_id << " " << person.photos_url[ 0 ] << "\n";
 				}
 			}
-			mutex.unlock();
+			mutex.unlock();*/
 		} else if( event->type() == QEvent::MouseMove )
 		{
 			QMouseEvent *mouseEvent = static_cast<QMouseEvent*>( event );
@@ -103,7 +104,7 @@ protected:
 		texture_thread = std::thread( [ this ]()
 		{
 			QEventLoop loop;
-			VKMapper vkmapper( "f3fb74134dca54a7f43e99158ff8ad67220f75b05bde8839930606f6c01392017a7101b671aa712a0304c" );
+			VKMapper vkmapper( "c16b79da7ea37241b307f216cadc23ba2f6213cb3adf2c4b20384715042c176d22dc011db83d7a27971ba" );
 			int requests_counter = 0;
 			vkmapper.makeThisThread();
 			vkmapper.quitEvent( loop );
@@ -263,7 +264,7 @@ protected:
 		glActiveTexture( GL_TEXTURE0 );
 		glBindTexture( GL_TEXTURE_2D , atlas.atlas_texture );
 		//pack();
-		view.render( spatial_states , model.getRelations() , x , y , z , w , h );
+		view.render( spatial_states , model.getRelations() , aQuadNodes , x , y , z , w , h );
 		atlas.draw();
 		mutex.unlock();
 		/*for( auto const &response : responses )
@@ -307,6 +308,7 @@ private:
 	PersonGraph model;
 	Atlas atlas;
 	QVector< SpatialState > spatial_states;
+	std::vector< QuadNode > aQuadNodes;
 	int32_t spatial_queue = 0;
 	void addPerson( Person const &p )
 	{
@@ -332,16 +334,8 @@ private:
 
 	void pack()
 	{
-		float max_x = 0.0f , min_x = 0.0f , max_y = 0.0f , min_y = 0.0f;
+		
 		mutex.lock();
-		auto spatial_states = this->spatial_states;
-		spatial_states.detach();
-		auto relations = model.getRelations();
-		relations.detach();
-		auto spatial_queue = this->spatial_queue;
-		this->spatial_queue = 0;
-		mutex.unlock();
-
 		for( ; spatial_queue > 0; spatial_queue-- )
 		{
 			float r = sqrtf( unirandf() ) * 100.0f;
@@ -349,7 +343,6 @@ private:
 			SpatialState sstate{ cosf( phi ) * r , sinf( phi ) * r };
 			spatial_states.append( sstate );
 		}
-		mutex.lock();
 		for( auto uvmap : uvmaps )
 		{
 			auto mapping = uvmap.second;
@@ -359,14 +352,21 @@ private:
 			spatial_states[ uvmap.first ].v_size = mapping.v_size;
 		}
 		uvmaps.clear();
-		mutex.unlock();
-		for( auto const &sstate : spatial_states )
+		std::vector< vec2 > pos;
+		pos.reserve( spatial_states.size() * 2 );
+		for( auto sstate : spatial_states )
 		{
-			max_x = fmaxf( max_x , sstate.x );
-			min_x = fminf( min_x , sstate.x );
-			max_y = fmaxf( max_y , sstate.y );
-			min_y = fminf( min_y , sstate.y );
+			pos.push_back( { sstate.x , sstate.y } );
 		}
+		auto relations = model.getRelations();
+		relations.detach();
+		mutex.unlock();
+		std::vector< QuadNode > aQuadNodes;
+		if( pos.size() > 0 )
+		{
+			packCuda( std::vector< Relation >() , pos , aQuadNodes );
+		}
+		/*
 		
 		for( auto const &relation : relations )
 		{
@@ -388,12 +388,11 @@ private:
 				v1.x -= dx * force;
 				v1.y -= dy * force;
 			}
-		}
-		auto nspatial_states = spatial_states;
-		nspatial_states.detach();
+		}*/
+		
 		//__android_log_print( ANDROID_LOG_VERBOSE , "NATIVE" , "size(%f,%f,%f)\n" ,
 		//	( max_x + min_x ) * 0.5f , ( max_y + min_y ) * 0.5f , fmaxf( fabsf( max_x - min_x ) , fabsf( max_y - min_y ) ) * 0.5f );
-		QuadTree tree( ( max_x + min_x ) * 0.5f , ( max_y + min_y ) * 0.5f , fmaxf( max_x - min_x , max_y - min_y ) * 0.5f );
+		/*QuadTree tree( ( max_x + min_x ) * 0.5f , ( max_y + min_y ) * 0.5f , fmaxf( max_x - min_x , max_y - min_y ) * 0.5f );
 		int i = 0;
 		for( auto const &sstate : spatial_states )
 		{
@@ -426,9 +425,14 @@ private:
 					nsstate1.y -= dy * force;
 				}
 			}
-		}
+		}*/
 		mutex.lock();
-		this->spatial_states = std::move( nspatial_states );
+		this->aQuadNodes = std::move( aQuadNodes );
+		for( int i = 0; i < spatial_states.size(); i++ )
+		{
+			spatial_states[ i ].x = pos[ i ].x;
+			spatial_states[ i ].y = pos[ i ].y;
+		}
 		mutex.unlock();
 		/*float viewproj[] =
 		{
