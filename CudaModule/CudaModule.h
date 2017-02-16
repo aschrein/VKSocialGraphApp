@@ -10,8 +10,21 @@ struct QuadNode
 	the indices of children within the same array
 	or indices of the -1*start( children[ 0 ] ) and of the -1*end( children[ 1 ] ) items if the children[ 0 ] < 0
 	*/
-	int children[ 4 ];
+	union
+	{
+		struct
+		{
+			int children[ 4 ];
+		};
+		struct
+		{
+			int itemsBegin;
+			int itemsCount;
+			int order;
+		};
+	};
 };
+static constexpr auto sizeQuadNode = sizeof( QuadNode );
 inline vec2 getChildPosition( float centerX , float centerY , float cellSize , int i )
 {
 	return

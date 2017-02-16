@@ -104,7 +104,7 @@ protected:
 		texture_thread = std::thread( [ this ]()
 		{
 			QEventLoop loop;
-			VKMapper vkmapper( "c16b79da7ea37241b307f216cadc23ba2f6213cb3adf2c4b20384715042c176d22dc011db83d7a27971ba" );
+			VKMapper vkmapper( "884a977d3a73ae659d7c38475613b3601a2725cff4230de2555f9dca1dc1c43750ffdc9c47a021e25a96c" );
 			int requests_counter = 0;
 			vkmapper.makeThisThread();
 			vkmapper.quitEvent( loop );

@@ -233,7 +233,7 @@ struct View
 			}
 			glBindVertexArray( vao );
 			program.bind();
-			glUniform4f( ucolor , 0.0f , 0.0f , 0.0f , 1.0f );
+			glUniform4f( ucolor , 1.0f , 0.0f , 0.0f , 1.0f );
 			glUniformMatrix4fv( uviewproj , 1 , false , viewproj );
 			glDrawArrays( GL_LINES , 0 , aQuadNodes.size() * 8 );
 			glBindVertexArray( 0 );
@@ -261,9 +261,10 @@ struct View
 			0.0f , 0.0f , 1.0f , 0.0f ,
 			x , -y , 0.0f , z
 		};
-		edges.drawQuadNodes( sstates , aQuadNodes , viewproj );
+		
 		edges.draw( sstates , relations , viewproj );
 		rects.draw( sstates , viewproj );
+		edges.drawQuadNodes( sstates , aQuadNodes , viewproj );
 
 	}
 };
