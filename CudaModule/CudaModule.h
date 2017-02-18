@@ -18,9 +18,9 @@ struct QuadNode
 		};
 		struct
 		{
+			int placeHolder;
 			int itemsBegin;
 			int itemsCount;
-			int order;
 		};
 	};
 };

@@ -61,31 +61,78 @@ __global__ void distributeCells(
 		cuAssert( curIndex != oldIndex );
 		oldIndex = curIndex;
 	}
-	//increase the node's occupation counter
-	int index = atomicAdd( &pNodes[ curIndex ].itemsCount , 1 );
-	//map this point to the leaf
-	dPointsToLeafs[ pointId ] = { curIndex , index };
+	//if node is fresh
+	if( curNode.children[ 0 ] == -1 )
+	{
+		//increase the node's occupation counter
+		int index = atomicAdd( &pNodes[ curIndex ].itemsCount , 1 );
+		//map this point to the leaf
+		dPointsToLeafs[ pointId ] = { curIndex , index };
+	}
 }
-__global__ void mapOrder( QuadNode *pNodes , int leafsCount , int *pLeafIndices , int *pCounts )
+__global__ void fillOccupation( QuadNode const *pNodes , int leafsCount , int const *pLeafIndices , int *pCounts )
 {
 	int leafIndex = threadIdx.x + blockDim.x * blockIdx.x;
 	cuAssert( leafIndex < leafsCount );
-	pNodes[ pLeafIndices[ leafIndex ] ].order = leafIndex;
 	pCounts[ leafIndex ] = pNodes[ pLeafIndices[ leafIndex ] ].itemsCount;
 }
-__global__ void fillLeafs( QuadNode *pNodes , int leafsCount , int *pLeafIndices , int const *pCountsScan )
+__global__ void fillLeafs( QuadNode *pNodes , int leafsCount , int const *pLeafIndices , int const const *pCountsScan )
 {
 	int leafIndex = threadIdx.x + blockDim.x * blockIdx.x;
 	cuAssert( leafIndex < leafsCount );
-	pNodes[ pLeafIndices[ leafIndex ] ].itemsBegin = -pCountsScan[ leafIndex ];
+	pNodes[ pLeafIndices[ leafIndex ] ].itemsBegin = pCountsScan[ leafIndex ];
 }
-__global__ void kPack( float const *pos , int posN , float *npos )
+__global__ void mapPoints( LeafMapping const *dPointsToLeafs , QuadNode const *pNodes , int *pointsBank , int posN )
 {
-	int i = threadIdx.x + blockDim.x * blockIdx.x;
-	if( i < posN )
+	int pointId = threadIdx.x + blockDim.x * blockIdx.x;
+	cuAssert( pointId < posN );
+	auto mapping = dPointsToLeafs[ pointId ];
+	auto node = pNodes[ mapping.m_leafId ];
+	pointsBank[ node.itemsBegin + mapping.m_index ] = pointId;
+}
+__global__ void kPack( vec2  const *pPoints , vec2 *pOutPoints , int const *pointsBank , int posN ,
+	float centerX , float centerY , float cellSize , QuadNode const *pNodes )
+{
+	int pointId = threadIdx.x + blockDim.x * blockIdx.x;
+	cuAssert( pointId < posN );
+	vec2 point = pPoints[ pointId ];
+	QuadNode curNode = pNodes[ 0 ];
+	int curIndex = 0 , oldIndex = 0;
+	//the average depth is log4(N)
+	while( curNode.children[ 0 ] > 0 )
 	{
-
+		for( int i = 0; i < 4; i++ )
+		{
+			float childCenterX = centerX + cellSize * ( ( i & 1 ) * 2 - 1 ) / 2;
+			float childCenterY = centerY + cellSize * ( ( i >> 1 ) * 2 - 1 ) / 2;
+			float childSize = cellSize / 2;
+			if(
+				TransientQuadNode{ { childCenterX , childCenterY } , childSize }
+				.contains( point )
+				)
+			{
+				//no other node contains this point and we must switch to that node and check against its children
+				curIndex = curNode.children[ i ];
+				curNode = pNodes[ curIndex ];
+				centerX = childCenterX;
+				centerY = childCenterY;
+				cellSize = childSize;
+				break;
+			}
+		}
+		cuAssert( curIndex != oldIndex );
+		oldIndex = curIndex;
 	}
+	for( int i = 0; i < curNode.itemsCount; i++ )
+	{
+		vec2 ipoint = pPoints[ pointsBank[ curNode.itemsBegin + i ] ];
+		float dx = ipoint.x - point.x;
+		float dy = ipoint.y - point.y;
+		float dist2 = dx * dx + dy * dy;
+		point.x -= 0.01f * dx / ( dist2 + 1.0f );
+		point.y -= 0.01f * dy / ( dist2 + 1.0f );
+	}
+	pOutPoints[ pointId ] = point;
 }
 //device side array
 template< class T > using dVector = thrust::device_vector< T >;
@@ -179,6 +226,9 @@ void packCuda( hVector< Relation > const &relations ,
 			{
 				split = true;
 				splitLeaf( hQuadNodes , leafIndex , aLeafsIndices );
+			} else
+			{
+				hQuadNodes[ leafIndex ].children[ 0 ] = -2;
 			}
 		}
 		copy( dQuadNodes , hQuadNodes );
@@ -187,6 +237,7 @@ void packCuda( hVector< Relation > const &relations ,
 			break;
 		}
 	}
+	dVector< int > dPointMap;
 	//by now we have an empty balanced BVH ready to be filled in
 	{
 		dVector< int > dLeafsIndices , dLeafsScan;
@@ -194,7 +245,7 @@ void packCuda( hVector< Relation > const &relations ,
 		dLeafsScan.resize( aLeafsIndices.size() );
 		thrust::copy( aLeafsIndices.begin() , aLeafsIndices.end() , dLeafsIndices.begin() );
 		thrust::sort( dLeafsIndices.begin() , dLeafsIndices.end() );
-		mapOrder << < dim3( ( aLeafsIndices.size() + 31 ) / 32 ) , dim3( 32 , 1 , 1 ) >> > (
+		fillOccupation << < dim3( ( aLeafsIndices.size() + 31 ) / 32 ) , dim3( 32 , 1 , 1 ) >> > (
 			thrust::raw_pointer_cast( dQuadNodes.data() ) ,
 			aLeafsIndices.size() ,
 			thrust::raw_pointer_cast( dLeafsIndices.data() ) ,
@@ -207,13 +258,30 @@ void packCuda( hVector< Relation > const &relations ,
 			thrust::raw_pointer_cast( dLeafsIndices.data() ) ,
 			thrust::raw_pointer_cast( dLeafsScan.data() )
 			);
-		copy( hQuadNodes , dQuadNodes );
-		/*hVector< int > hLeafsScan;
-		hLeafsScan.resize( aLeafsIndices.size() );
-		thrust::copy( dLeafsScan.begin() , dLeafsScan.end() , hLeafsScan.begin() );*/
+		//copy( hQuadNodes , dQuadNodes );
+		dPointMap.resize( aPoints.size() );
+		mapPoints << < dim3( ( aPoints.size() + 31 ) / 32 ) , dim3( 32 , 1 , 1 ) >> > (
+			thrust::raw_pointer_cast( dPointsToLeafs.data() ) ,
+			thrust::raw_pointer_cast( dQuadNodes.data() ) ,
+			thrust::raw_pointer_cast( dPointMap.data() ) ,
+			aPoints.size()
+			);
+		//hVector< int > hPointMap;
+		//hVector< LeafMapping > hPointsToLeafs;
+		//copy( hPointsToLeafs , dPointsToLeafs );
+		//copy( hPointMap , dPointMap );
 	}
-
-
+	{
+		dVector< vec2 > dOutPoints( aPoints.size() );
+		kPack << < dim3( ( aPoints.size() + 31 ) / 32 ) , dim3( 32 , 1 , 1 ) >> > (
+			thrust::raw_pointer_cast( dPoints.data() ) ,
+			thrust::raw_pointer_cast( dOutPoints.data() ) ,
+			thrust::raw_pointer_cast( dPointMap.data() ) , aPoints.size() ,
+			rootX , rootY , rootSize ,
+			thrust::raw_pointer_cast( dQuadNodes.data() )
+			);
+		copy( aPoints , dOutPoints );
+	}
 	//copy the tree to the host for debug usage
 	out_aQuadNode.resize( dQuadNodes.size() );
 	thrust::copy( dQuadNodes.begin() , dQuadNodes.end() , out_aQuadNode.begin() );

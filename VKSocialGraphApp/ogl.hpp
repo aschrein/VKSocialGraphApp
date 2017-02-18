@@ -130,7 +130,7 @@ struct AttributeArray
 };
 struct Buffer
 {
-	static const int32_t STEP = 10;
+	static const int32_t STEP = 1024;
 	int32_t real_size = 0;
 	int32_t size = 0;
 	uint32_t bo = 0;
