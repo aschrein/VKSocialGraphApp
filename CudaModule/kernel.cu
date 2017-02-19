@@ -15,6 +15,10 @@ struct TransientQuadNode
 	{
 		return fabsf( position.x - point.x ) <= size &&  fabsf( position.y - point.y ) <= size;
 	}
+	__host__ __device__ bool contains( vec2 const &point , float pointSize )
+	{
+		return fabsf( position.x - point.x ) <= size + pointSize &&  fabsf( position.y - point.y ) <= size + pointSize;
+	}
 };
 struct LeafMapping
 {
@@ -90,48 +94,113 @@ __global__ void mapPoints( LeafMapping const *dPointsToLeafs , QuadNode const *p
 	auto node = pNodes[ mapping.m_leafId ];
 	pointsBank[ node.itemsBegin + mapping.m_index ] = pointId;
 }
-__global__ void kPack( vec2  const *pPoints , vec2 *pOutPoints , int const *pointsBank , int posN ,
+struct CandEntry
+{
+	float dist2;
+	int index;
+};
+__device__ bool putEntry( float dist2 , int index , CandEntry *entries , int entriesCount , int entriesLim )
+{
+	int i = 0;
+	for(; i < entriesCount; i++ )
+	{
+		if( dist2 < entries[ i ].dist2 )
+		{
+			if( i < entriesLim - 1 )
+			{
+				for( int j = entriesCount; j > i; j-- )
+				{
+					entries[ j ] = entries[ j - 1 ];
+				}
+			} else
+			{
+				entries[ i ] = { dist2 , index };
+			}
+		}
+	}
+	if( i >= entriesCount )
+	{
+		return false;
+	}
+	entries[ i ] = { dist2 , index };
+	return true;
+}
+__device__ float pushForce( float x )
+{
+	return 1.0f / ( 1.0f + x );
+}
+__device__ float pullForce( float x )
+{
+	return fmin( 1.0f , x );
+}
+__global__ void kPack( vec2 const *pPoints , vec2 *pOutPoints , LeafMapping const *dPointsToLeafs , int const *pointsBank , int posN ,
 	float centerX , float centerY , float cellSize , QuadNode const *pNodes )
 {
 	int pointId = threadIdx.x + blockDim.x * blockIdx.x;
 	cuAssert( pointId < posN );
 	vec2 point = pPoints[ pointId ];
-	QuadNode curNode = pNodes[ 0 ];
-	int curIndex = 0 , oldIndex = 0;
-	//the average depth is log4(N)
-	while( curNode.children[ 0 ] > 0 )
+	struct StackFrame
 	{
-		for( int i = 0; i < 4; i++ )
+		int m_nodeIndex;
+		int m_subNodeIndex;
+		float centerX;
+		float centerY;
+		float cellSize;
+	};
+	StackFrame path[ 8 ] = { {0,0,centerX ,centerY ,cellSize } };
+	int stackPtr = 0;
+	QuadNode curNode = pNodes[ 0 ];
+	while( true )
+	{
+		if( curNode.children[ 0 ] < 0 )
 		{
-			float childCenterX = centerX + cellSize * ( ( i & 1 ) * 2 - 1 ) / 2;
-			float childCenterY = centerY + cellSize * ( ( i >> 1 ) * 2 - 1 ) / 2;
-			float childSize = cellSize / 2;
-			if(
-				TransientQuadNode{ { childCenterX , childCenterY } , childSize }
-				.contains( point )
-				)
+			for( int i = 0; i < curNode.itemsCount; i++ )
 			{
-				//no other node contains this point and we must switch to that node and check against its children
-				curIndex = curNode.children[ i ];
-				curNode = pNodes[ curIndex ];
-				centerX = childCenterX;
-				centerY = childCenterY;
-				cellSize = childSize;
-				break;
+				vec2 ipoint = pPoints[ pointsBank[ curNode.itemsBegin + i ] ];
+				float dx = point.x - ipoint.x;
+				float dy = point.y - ipoint.y;
+				float dist2 = dx * dx + dy * dy;
+				if( dist2 > 1.0e-7f )
+				{
+					float dist = sqrtf( dist2 );
+					dx /= dist;
+					dy /= dist;
+					point.x += dx * pushForce( dist * 2 );
+					point.y += dy * pushForce( dist * 2 );
+				}
+			}
+			curNode = pNodes[ path[ --stackPtr ].m_nodeIndex ];
+		} else
+		{
+			bool step = false;
+			for( int i = path[ stackPtr ].m_subNodeIndex; i < 4; i++ )
+			{
+				float childCenterX = path[ stackPtr ].centerX + path[ stackPtr ].cellSize * ( ( i & 1 ) * 2 - 1 ) / 2;
+				float childCenterY = path[ stackPtr ].centerY + path[ stackPtr ].cellSize * ( ( i >> 1 ) * 2 - 1 ) / 2;
+				float childSize = path[ stackPtr ].cellSize / 2;
+				if(
+					TransientQuadNode{ { childCenterX , childCenterY } , childSize }
+					.contains( point , 10.0f )
+					)
+				{
+					step = true;
+					path[ stackPtr ].m_subNodeIndex = i + 1;
+					path[ ++stackPtr ] = { curNode.children[ i ] , 0 , childCenterX , childCenterY , childSize };
+					curNode = pNodes[ curNode.children[ i ] ];
+					break;
+				}
+			}
+			if( !step )
+			{
+				if( --stackPtr < 0 )
+				{
+					break;
+				}
+				curNode = pNodes[ path[ stackPtr ].m_nodeIndex ];
 			}
 		}
-		cuAssert( curIndex != oldIndex );
-		oldIndex = curIndex;
 	}
-	for( int i = 0; i < curNode.itemsCount; i++ )
-	{
-		vec2 ipoint = pPoints[ pointsBank[ curNode.itemsBegin + i ] ];
-		float dx = ipoint.x - point.x;
-		float dy = ipoint.y - point.y;
-		float dist2 = dx * dx + dy * dy;
-		point.x -= 0.01f * dx / ( dist2 + 1.0f );
-		point.y -= 0.01f * dy / ( dist2 + 1.0f );
-	}
+	
 	pOutPoints[ pointId ] = point;
 }
 //device side array
@@ -188,7 +257,7 @@ void packCuda( hVector< Relation > const &relations ,
 	}
 	float rootX = ( max_x + min_x ) * 0.5f;
 	float rootY = ( max_y + min_y ) * 0.5f;
-	float rootSize = fmaxf( ( max_x - min_x ) * 0.5f , ( max_y - min_y ) * 0.5f );
+	float rootSize = 2.0f + fmaxf( ( max_x - min_x ) * 0.5f , ( max_y - min_y ) * 0.5f );
 
 	//device side copy of points
 	dVector< vec2 > dPoints = aPoints;
@@ -204,7 +273,7 @@ void packCuda( hVector< Relation > const &relations ,
 	//allocate 4 leafs
 	splitLeaf( hQuadNodes , 0 , aLeafsIndices );
 	copy( dQuadNodes , hQuadNodes );
-	int maxDepth = 8;
+	int maxDepth = 6;
 	//the estimated complexity is O( N * log(N)^2 )
 	while( true )
 	{
@@ -222,7 +291,7 @@ void packCuda( hVector< Relation > const &relations ,
 		bool split = false;
 		for( int leafIndex : aLeafsIndices_c )
 		{
-			if( hQuadNodes[ leafIndex ].itemsCount > 10 )
+			if( hQuadNodes[ leafIndex ].itemsCount > 8 )
 			{
 				split = true;
 				splitLeaf( hQuadNodes , leafIndex , aLeafsIndices );
@@ -276,6 +345,7 @@ void packCuda( hVector< Relation > const &relations ,
 		kPack << < dim3( ( aPoints.size() + 31 ) / 32 ) , dim3( 32 , 1 , 1 ) >> > (
 			thrust::raw_pointer_cast( dPoints.data() ) ,
 			thrust::raw_pointer_cast( dOutPoints.data() ) ,
+			thrust::raw_pointer_cast( dPointsToLeafs.data() ) ,
 			thrust::raw_pointer_cast( dPointMap.data() ) , aPoints.size() ,
 			rootX , rootY , rootSize ,
 			thrust::raw_pointer_cast( dQuadNodes.data() )

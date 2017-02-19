@@ -224,7 +224,7 @@ struct View
 			}
 			float rootX = ( max_x + min_x ) * 0.5f;
 			float rootY = ( max_y + min_y ) * 0.5f;
-			float rootSize = fmaxf( ( max_x - min_x ) * 0.5f , ( max_y - min_y ) * 0.5f );
+			float rootSize = 2.0f + fmaxf( ( max_x - min_x ) * 0.5f , ( max_y - min_y ) * 0.5f );
 			{
 				dev_buffer.bind();
 				dev_buffer.resize( aQuadNodes.size() * 8 * 2 * 4 );

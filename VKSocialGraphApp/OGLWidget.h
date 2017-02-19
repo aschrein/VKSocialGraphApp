@@ -366,12 +366,12 @@ private:
 		{
 			packCuda( std::vector< Relation >() , pos , aQuadNodes );
 		}
-		/*
+		
 		
 		for( auto const &relation : relations )
 		{
-			auto &v0 = spatial_states[ relation.first ];
-			auto &v1 = spatial_states[ relation.second ];
+			auto &v0 = pos[ relation.first ];
+			auto &v1 = pos[ relation.second ];
 			//auto &nv0 = nspatial_states[ relation.first ];
 			//auto &nv1 = nspatial_states[ relation.second ];
 			float dx = v1.x - v0.x;
@@ -388,7 +388,7 @@ private:
 				v1.x -= dx * force;
 				v1.y -= dy * force;
 			}
-		}*/
+		}
 		
 		//__android_log_print( ANDROID_LOG_VERBOSE , "NATIVE" , "size(%f,%f,%f)\n" ,
 		//	( max_x + min_x ) * 0.5f , ( max_y + min_y ) * 0.5f , fmaxf( fabsf( max_x - min_x ) , fabsf( max_y - min_y ) ) * 0.5f );
